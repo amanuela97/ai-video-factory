@@ -29,7 +29,13 @@ RETENTION STRATEGY (MANDATORY):
 2. MICRO-REWARDS: every scene reveals something new
 3. CONTRAST: show wrong vs right, or before vs after
 4. PROGRESSIVE COMPLEXITY: each scene slightly increases depth
-5. PAYOFF ENDING: final scenes resolve all open loops
+5. PAYOFF ENDING: final 2 scenes MUST resolve all open loops and deliver a satisfying conclusion
+
+CONCLUSION RULES (HARD):
+- The second-to-last scene must summarize the key insight
+- The last scene must deliver the final payoff / "now you know" moment
+- The video must NOT end mid-explanation or mid-thought
+- Every open question introduced earlier MUST be answered before the end
 
 HOOK RULE: First 10 seconds MUST contain a surprising fact, contradiction, or shocking simplification.
 

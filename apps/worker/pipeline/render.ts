@@ -7,11 +7,31 @@ export interface SceneAsset {
   end: number;
   narration: string;
   imagePath: string;
-  fullAudioPath: string; // single full narration MP3 — FFmpeg extracts the right segment
+  audioPath: string; // per-scene audio file — image stays until this finishes
+}
+
+// Splits text into lines of at most maxLen characters, breaking on word boundaries.
+// FFmpeg textfile= supports newlines and renders each line separately.
+function wrapText(text: string, maxLen = 52): string {
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    if ((current + " " + word).trim().length > maxLen) {
+      if (current) lines.push(current.trim());
+      current = word;
+    } else {
+      current = current ? current + " " + word : word;
+    }
+  }
+  if (current) lines.push(current.trim());
+  return lines.join("\n");
 }
 
 // Renders each scene as an individual MP4 clip.
-// Each clip: still image with Ken Burns zoom + audio segment extracted from the full narration track + burned subtitle.
+// Image stays on screen for exactly as long as the per-scene audio takes —
+// no more desync between voiceover and visuals.
 export async function renderScenes(scenes: SceneAsset[]): Promise<string[]> {
   const scenesDir = path.resolve("./tmp/scenes");
   fs.mkdirSync(scenesDir, { recursive: true });
@@ -20,39 +40,33 @@ export async function renderScenes(scenes: SceneAsset[]): Promise<string[]> {
 
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
-    const duration = s.end - s.start;
     const output = path.join(scenesDir, `scene_${i}.mp4`);
 
-    // Write subtitle text to a file so FFmpeg reads it directly.
-    // This avoids all shell/filter escaping issues with %, :, ', , and other
-    // special characters that AI-generated text commonly contains.
+    // Write wrapped subtitle text to a file.
+    // textfile= avoids all shell/filter escaping issues with special characters.
     const captionPath = path.join(scenesDir, `scene_${i}_caption.txt`);
-    fs.writeFileSync(captionPath, s.narration.slice(0, 120));
+    fs.writeFileSync(captionPath, wrapText(s.narration, 52));
 
-    // Build video filter chain:
-    // 1. scale to 1920x1080
-    // 2. zoompan: subtle Ken Burns zoom-in effect (zoom from 1.0 to 1.08 over the scene)
-    // 3. drawtext: burned-in subtitle using textfile= (safe for any text content)
     const vf = [
       "scale=1920:1080",
       "zoompan=z='min(zoom+0.0008,1.08)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-      `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=32:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=h-th-50`,
+      // Padded x so subtitle never touches the edge; centered using text_w
+      `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=34:line_spacing=8:box=1:boxcolor=black@0.65:boxborderw=14:x=(w-text_w)/2:y=h-text_h-60`,
     ].join(",");
 
     const cmd = [
       "ffmpeg -y",
-      `-loop 1 -i "${s.imagePath}"`,
-      `-ss ${s.start} -t ${duration} -i "${s.fullAudioPath}"`,
-      `-t ${duration}`,
+      `-loop 1 -i "${s.imagePath}"`,  // static image
+      `-i "${s.audioPath}"`,           // per-scene audio — -shortest stops when audio ends
       `-vf "${vf}"`,
-      `-c:v libx264`,
+      `-c:v libx264 -preset fast`,
       `-pix_fmt yuv420p`,
       `-c:a aac -b:a 192k`,
       `-shortest`,
       `"${output}"`,
     ].join(" ");
 
-    console.log(`Rendering scene ${i + 1}/${scenes.length} (${duration}s)`);
+    console.log(`Rendering scene ${i + 1}/${scenes.length}`);
     execSync(cmd, { stdio: "inherit" });
     outputs.push(output);
   }
@@ -60,21 +74,53 @@ export async function renderScenes(scenes: SceneAsset[]): Promise<string[]> {
   return outputs;
 }
 
-// Concatenates all scene clips into the final video.
-// Re-encodes instead of stream-copying to guarantee audio/video sync.
+// Renders a 6-second ByteForge outro card — dark background, channel name,
+// subscribe call-to-action. Uses a static textfile so no escaping issues.
+export async function renderOutro(): Promise<string> {
+  const scenesDir = path.resolve("./tmp/scenes");
+  fs.mkdirSync(scenesDir, { recursive: true });
+
+  const output = path.join(scenesDir, "outro.mp4");
+  const captionPath = path.join(scenesDir, "outro_caption.txt");
+
+  // Two-line outro text
+  fs.writeFileSync(captionPath, "ByteForge\nSubscribe for more!");
+
+  const vf = [
+    // Dark navy background drawn over the (empty) input
+    "drawbox=x=0:y=0:w=iw:h=ih:color=0x0d1117:t=fill",
+    `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=72:line_spacing=20:x=(w-text_w)/2:y=(h-text_h)/2`,
+  ].join(",");
+
+  const cmd = [
+    "ffmpeg -y",
+    "-f lavfi -i color=c=black:size=1920x1080:rate=30",
+    "-f lavfi -i anullsrc=r=44100:cl=stereo",
+    "-t 6",
+    `-vf "${vf}"`,
+    "-c:v libx264 -preset fast -pix_fmt yuv420p",
+    "-c:a aac -b:a 192k",
+    "-shortest",
+    `"${output}"`,
+  ].join(" ");
+
+  console.log("Rendering ByteForge outro...");
+  execSync(cmd, { stdio: "inherit" });
+  return output;
+}
+
+// Concatenates all scene clips (including outro) into the final video.
 export async function concatScenes(sceneFiles: string[]): Promise<string> {
   const listPath = path.resolve("./tmp/concat_list.txt");
   const output = path.resolve("./tmp/final.mp4");
 
-  // Write ffmpeg concat list — each line: file 'path/to/scene.mp4'
   fs.writeFileSync(
     listPath,
     sceneFiles.map((f) => `file '${f.replace(/\\/g, "/")}'`).join("\n")
   );
 
-  console.log(`Concatenating ${sceneFiles.length} scenes into final.mp4...`);
+  console.log(`Concatenating ${sceneFiles.length} clips into final.mp4...`);
 
-  // Re-encode on concat for reliable audio sync (not -c copy which can cause A/V desync)
   execSync(
     `ffmpeg -y -f concat -safe 0 -i "${listPath}" -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 192k "${output}"`,
     { stdio: "inherit" }

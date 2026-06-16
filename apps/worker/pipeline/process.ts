@@ -1,9 +1,10 @@
+import fs from "fs";
 import path from "path";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { generateScript, type Script } from "./gemini";
-import { generateVoice } from "./voice";
+import { cleanNarration, generateSceneAudio } from "./voice";
 import { generateImages } from "./images";
-import { renderScenes, concatScenes } from "./render";
+import { renderScenes, renderOutro, concatScenes } from "./render";
 import { uploadToBlob } from "./upload";
 import { sendVideoReady } from "./whatsapp";
 import { retry } from "./retry";
@@ -11,9 +12,6 @@ import { trackCost } from "../lib/cost";
 import { generateThumbnail, pickThumbnailScene } from "./thumbnail";
 import { hashKey, getCached, setCached, downloadToFile } from "../lib/cache";
 
-// Main pipeline orchestrator — called by the worker for each queued job.
-// Executes all pipeline steps in sequence, with retry on each step.
-// markJob is injected from index.ts to update job status in Supabase.
 export async function processJob(
   job: {
     id: string;
@@ -49,31 +47,45 @@ export async function processJob(
     });
   }
 
-  // ── STEP 2: Generate voice via ElevenLabs (cached) ───────────────────────
+  // ── STEP 2: Generate per-scene voice audio (cached per scene) ───────────
   await markJob(job.id, "generating_voice");
   console.log("Step 2: Generating voice...");
-  const narrationText = script.scenes.map((s) => s.narration).join("|");
-  const voiceKey = hashKey(narrationText, process.env.ELEVENLABS_VOICE_ID || "default");
 
-  type VoiceCacheEntry = { blobUrl: string; cost: number };
-  const cachedVoice = await getCached<VoiceCacheEntry>(supabase, "voice", voiceKey);
+  const audioDir = path.resolve("./tmp/audio");
+  fs.mkdirSync(audioDir, { recursive: true });
 
-  let fullAudioPath: string;
-  if (cachedVoice) {
-    console.log("Step 2: Cache hit — reusing voice audio");
-    fullAudioPath = path.resolve("./tmp/narration_full.mp3");
-    await downloadToFile(cachedVoice.blobUrl, fullAudioPath);
-  } else {
-    const voice = await retry(() => generateVoice(script), 3, "elevenlabs-voice");
-    fullAudioPath = voice.fullAudioPath;
-    const audioBlobUrl = await uploadToBlob(fullAudioPath);
-    await setCached(supabase, "voice", voiceKey, { blobUrl: audioBlobUrl, cost: voice.cost });
+  const audioPaths: string[] = [];
+  let voiceTotalCost = 0;
+
+  for (let i = 0; i < script.scenes.length; i++) {
+    const cleaned = cleanNarration(script.scenes[i].narration);
+    const voiceKey = hashKey(cleaned, process.env.ELEVENLABS_VOICE_ID || "default");
+    const audioPath = path.join(audioDir, `scene_${i}.mp3`);
+
+    const cached = await getCached<{ blobUrl: string }>(supabase, "voice", voiceKey);
+    if (cached) {
+      console.log(`Voice scene ${i + 1}/${script.scenes.length}: Cache hit`);
+      await downloadToFile(cached.blobUrl, audioPath);
+    } else {
+      await retry(
+        () => generateSceneAudio(cleaned, audioPath),
+        3,
+        `elevenlabs-scene-${i}`
+      );
+      const blobUrl = await uploadToBlob(audioPath);
+      await setCached(supabase, "voice", voiceKey, { blobUrl });
+      voiceTotalCost += (cleaned.length / 1000) * 0.3;
+    }
+
+    audioPaths.push(audioPath);
+  }
+
+  if (voiceTotalCost > 0) {
     await trackCost(supabase, {
       videoId,
       service: "elevenlabs",
       model: "eleven_monolingual_v1",
-      cost: voice.cost,
-      metadata: { chars: narrationText.length },
+      cost: voiceTotalCost,
     });
   }
 
@@ -94,11 +106,11 @@ export async function processJob(
     });
   }
 
-  // Attach local file paths to scenes for rendering
+  // Each scene gets its own image + its own audio file
   const sceneAssets = script.scenes.map((scene, i) => ({
     ...scene,
     imagePath: imagePaths[i],
-    fullAudioPath,
+    audioPath: audioPaths[i],
   }));
 
   // ── STEP 4: Generate thumbnail ──────────────────────────────────────────
@@ -119,7 +131,8 @@ export async function processJob(
   await markJob(job.id, "rendering");
   console.log("Step 5: Rendering video...");
   const sceneFiles = await renderScenes(sceneAssets);
-  const finalVideoPath = await concatScenes(sceneFiles);
+  const outroPath = await renderOutro();
+  const finalVideoPath = await concatScenes([...sceneFiles, outroPath]);
 
   // ── STEP 6: Upload to Vercel Blob ───────────────────────────────────────
   await markJob(job.id, "uploading");

@@ -1,39 +1,40 @@
 import axios from "axios";
 import fs from "fs";
 import path from "path";
-import type { Scene } from "./gemini";
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY!;
-// Default: "Rachel" voice — calm, educational tone
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
 
-export interface VoiceResult {
-  fullAudioPath: string;
-  cost: number;
+// Strips markdown formatting characters that TTS reads aloud literally.
+// e.g. *stuff* → stuff, **bold** → bold, _italic_ → italic
+export function cleanNarration(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/_(.*?)_/g, "$1")
+    .replace(/`{1,3}(.*?)`{1,3}/g, "$1")
+    .replace(/#{1,6}\s+/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_~`#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-export async function generateVoice(script: { scenes: Scene[] }): Promise<VoiceResult> {
+// Generates ElevenLabs TTS audio for a single cleaned narration string
+// and writes it to the given output path.
+export async function generateSceneAudio(
+  narration: string,
+  outputPath: string
+): Promise<void> {
   if (!ELEVENLABS_API_KEY) throw new Error("Missing ELEVENLABS_API_KEY");
-
-  // Concatenate all scene narrations into a single narration track.
-  // Scenes are separated by a short pause to ensure natural pacing.
-  const fullNarration = script.scenes
-    .map((s) => s.narration.trim())
-    .join(" ... ");
-
-  console.log(
-    `Generating voice for ${script.scenes.length} scenes (${fullNarration.length} chars)`
-  );
 
   const response = await axios.post(
     `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
     {
-      text: fullNarration,
+      text: narration,
       model_id: "eleven_monolingual_v1",
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.75,
-      },
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
     },
     {
       headers: {
@@ -45,19 +46,6 @@ export async function generateVoice(script: { scenes: Scene[] }): Promise<VoiceR
     }
   );
 
-  // Ensure tmp directory exists
-  const tmpDir = path.resolve("./tmp");
-  fs.mkdirSync(tmpDir, { recursive: true });
-
-  const fullAudioPath = path.join(tmpDir, "narration_full.mp3");
-  fs.writeFileSync(fullAudioPath, Buffer.from(response.data));
-
-  // ElevenLabs Starter plan: ~$0.30 per 1000 characters
-  const cost = (fullNarration.length / 1000) * 0.3;
-
-  console.log(
-    `Voice generated: ${fullAudioPath} | est. cost: €${cost.toFixed(3)}`
-  );
-
-  return { fullAudioPath, cost };
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, Buffer.from(response.data));
 }
