@@ -18,7 +18,8 @@ OUTPUT MUST BE STRICT JSON ONLY. No markdown, no explanation, no code fences, no
 
 HARD RULES:
 - Must fully cover exactly ${durationSeconds} seconds total (last scene.end must equal ${durationSeconds})
-- Scenes must be 4-9 seconds each (no longer, no shorter)
+- Scenes must be 12-20 seconds each (no longer, no shorter)
+- Maximum 15 scenes total regardless of duration
 - No filler scenes
 - Every scene must advance understanding OR curiosity
 - Every 2-3 scenes must introduce a curiosity gap

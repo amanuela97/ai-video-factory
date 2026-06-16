@@ -40,7 +40,7 @@ export async function generateImages(
     }
 
     console.log(`Generating image ${i + 1}/${scenes.length} using flux`);
-    const imageBuffer = await callFlux(prompt);
+    const imageBuffer = await callFluxWithBackoff(prompt, i);
     fs.writeFileSync(imagePath, imageBuffer);
     paths.push(imagePath);
     totalCost += 0.01;
@@ -59,6 +59,30 @@ export async function generateImages(
   console.log(`Images generated: ${paths.length} files | est. cost: €${totalCost.toFixed(2)}`);
 
   return { paths, cost: totalCost };
+}
+
+// Wraps callFlux with 429-aware retry and a fixed inter-request delay.
+// Replicate's flux-schnell has a shared GPU queue and rate-limits bursts.
+async function callFluxWithBackoff(prompt: string, sceneIndex: number): Promise<Buffer> {
+  // Stagger requests: add a base delay between each scene to avoid burst 429s
+  if (sceneIndex > 0) await sleep(2000);
+
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await callFlux(prompt);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 429) {
+        const waitMs = 10_000 * (attempt + 1); // 10s, 20s, 30s …
+        console.warn(`Replicate 429 on scene ${sceneIndex + 1}, attempt ${attempt + 1}. Waiting ${waitMs / 1000}s...`);
+        await sleep(waitMs);
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error(`Replicate rate-limited after ${maxAttempts} attempts on scene ${sceneIndex + 1}`);
 }
 
 // FLUX via Replicate
