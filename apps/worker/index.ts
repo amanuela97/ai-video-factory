@@ -76,15 +76,17 @@ async function run() {
       console.error(`Job failed: ${job.id}`, err);
       await markJob(job.id, "failed", message);
 
-      // Send failure notification via WhatsApp
-      try {
-        const { sendWhatsAppMessage } = await import("./pipeline/whatsapp");
-        await sendWhatsAppMessage({
-          to: job.user_phone,
-          message: `❌ Video generation failed.\n\nTopic: ${job.input_topic}\nError: ${message}`,
-        });
-      } catch (notifyErr) {
-        console.error("Failed to send WhatsApp failure notification:", notifyErr);
+      // Send failure notification via WhatsApp (skip for debug/non-phone values)
+      if (job.user_phone && job.user_phone.startsWith("+")) {
+        try {
+          const { sendWhatsAppMessage } = await import("./pipeline/whatsapp");
+          await sendWhatsAppMessage({
+            to: job.user_phone,
+            message: `❌ Video generation failed.\n\nTopic: ${job.input_topic}\nError: ${message}`,
+          });
+        } catch (notifyErr) {
+          console.error("Failed to send WhatsApp failure notification:", notifyErr);
+        }
       }
     }
   }
