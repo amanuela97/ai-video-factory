@@ -2,6 +2,9 @@
   "name": "worker",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "ts-node --esm index.ts",
     "build": "tsc",
