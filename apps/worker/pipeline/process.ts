@@ -1,5 +1,6 @@
+import path from "path";
 import { SupabaseClient } from "@supabase/supabase-js";
-import { generateScript } from "./gemini";
+import { generateScript, type Script } from "./gemini";
 import { generateVoice } from "./voice";
 import { generateImages } from "./images";
 import { renderScenes, concatScenes } from "./render";
@@ -8,6 +9,7 @@ import { sendVideoReady } from "./whatsapp";
 import { retry } from "./retry";
 import { trackCost } from "../lib/cost";
 import { generateThumbnail, pickThumbnailScene } from "./thumbnail";
+import { hashKey, getCached, setCached, downloadToFile } from "../lib/cache";
 
 // Main pipeline orchestrator — called by the worker for each queued job.
 // Executes all pipeline steps in sequence, with retry on each step.
@@ -25,56 +27,78 @@ export async function processJob(
 ) {
   const videoId = job.video_id;
 
-  // ── STEP 1: Generate script via Gemini ──────────────────────────────────
+  // ── STEP 1: Generate script via Gemini (cached) ──────────────────────────
   console.log("Step 1: Generating script...");
-  const script = await retry(
-    () => generateScript({ topic: job.input_topic, duration: job.input_duration }),
-    3,
-    "gemini-script"
-  );
-  await trackCost(supabase, {
-    videoId,
-    service: "gemini",
-    model: "gemini-2.5-flash",
-    cost: script.cost,
-  });
+  const scriptKey = hashKey(job.input_topic, String(job.input_duration));
+  let script = await getCached<Script>(supabase, "script", scriptKey);
 
-  // ── STEP 2: Generate voice via ElevenLabs ───────────────────────────────
+  if (script) {
+    console.log("Step 1: Cache hit — reusing script");
+  } else {
+    script = await retry(
+      () => generateScript({ topic: job.input_topic, duration: job.input_duration }),
+      3,
+      "gemini-script"
+    );
+    await setCached(supabase, "script", scriptKey, script);
+    await trackCost(supabase, {
+      videoId,
+      service: "gemini",
+      model: "gemini-2.5-flash",
+      cost: script.cost,
+    });
+  }
+
+  // ── STEP 2: Generate voice via ElevenLabs (cached) ───────────────────────
   await markJob(job.id, "generating_voice");
   console.log("Step 2: Generating voice...");
-  const voice = await retry(
-    () => generateVoice(script),
-    3,
-    "elevenlabs-voice"
-  );
-  await trackCost(supabase, {
-    videoId,
-    service: "elevenlabs",
-    model: "eleven_monolingual_v1",
-    cost: voice.cost,
-    metadata: { chars: script.scenes.map((s) => s.narration).join(" ").length },
-  });
+  const narrationText = script.scenes.map((s) => s.narration).join("|");
+  const voiceKey = hashKey(narrationText, process.env.ELEVENLABS_VOICE_ID || "default");
 
-  // ── STEP 3: Generate images ─────────────────────────────────────────────
+  type VoiceCacheEntry = { blobUrl: string; cost: number };
+  const cachedVoice = await getCached<VoiceCacheEntry>(supabase, "voice", voiceKey);
+
+  let fullAudioPath: string;
+  if (cachedVoice) {
+    console.log("Step 2: Cache hit — reusing voice audio");
+    fullAudioPath = path.resolve("./tmp/narration_full.mp3");
+    await downloadToFile(cachedVoice.blobUrl, fullAudioPath);
+  } else {
+    const voice = await retry(() => generateVoice(script), 3, "elevenlabs-voice");
+    fullAudioPath = voice.fullAudioPath;
+    const audioBlobUrl = await uploadToBlob(fullAudioPath);
+    await setCached(supabase, "voice", voiceKey, { blobUrl: audioBlobUrl, cost: voice.cost });
+    await trackCost(supabase, {
+      videoId,
+      service: "elevenlabs",
+      model: "eleven_monolingual_v1",
+      cost: voice.cost,
+      metadata: { chars: narrationText.length },
+    });
+  }
+
+  // ── STEP 3: Generate images (cached per scene) ───────────────────────────
   await markJob(job.id, "generating_images");
   console.log("Step 3: Generating images...");
   const { paths: imagePaths, cost: imageCost } = await retry(
-    () => generateImages(script.scenes),
+    () => generateImages(script.scenes, supabase),
     3,
     "image-generation"
   );
-  await trackCost(supabase, {
-    videoId,
-    service: "images",
-    cost: imageCost,
-    metadata: { scene_count: script.scenes.length },
-  });
+  if (imageCost > 0) {
+    await trackCost(supabase, {
+      videoId,
+      service: "images",
+      cost: imageCost,
+      metadata: { scene_count: script.scenes.length },
+    });
+  }
 
   // Attach local file paths to scenes for rendering
   const sceneAssets = script.scenes.map((scene, i) => ({
     ...scene,
     imagePath: imagePaths[i],
-    fullAudioPath: voice.fullAudioPath,
+    fullAudioPath,
   }));
 
   // ── STEP 4: Generate thumbnail ──────────────────────────────────────────

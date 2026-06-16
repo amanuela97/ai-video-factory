@@ -1,16 +1,21 @@
 import axios from "axios";
 import fs from "fs";
 import path from "path";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { optimizeImagePrompt } from "./imagePromptOptimizer";
-import { chooseImageModel } from "./imageRouter";
 import type { Scene } from "./gemini";
+import { uploadToBlob } from "./upload";
+import { hashKey, getCached, setCached, downloadToFile } from "../lib/cache";
 
 export interface ImageResult {
   paths: string[];
   cost: number;
 }
 
-export async function generateImages(scenes: Scene[]): Promise<ImageResult> {
+export async function generateImages(
+  scenes: Scene[],
+  supabase?: SupabaseClient
+): Promise<ImageResult> {
   const imagesDir = path.resolve("./tmp/images");
   fs.mkdirSync(imagesDir, { recursive: true });
 
@@ -20,17 +25,35 @@ export async function generateImages(scenes: Scene[]): Promise<ImageResult> {
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
     const prompt = optimizeImagePrompt(scene);
+    const imagePath = path.join(imagesDir, `scene_${i}.png`);
+
+    // Check per-scene cache
+    const imageKey = hashKey(prompt);
+    if (supabase) {
+      const cached = await getCached<{ blobUrl: string }>(supabase, "image", imageKey);
+      if (cached) {
+        console.log(`Image ${i + 1}/${scenes.length}: Cache hit — reusing`);
+        await downloadToFile(cached.blobUrl, imagePath);
+        paths.push(imagePath);
+        continue;
+      }
+    }
 
     console.log(`Generating image ${i + 1}/${scenes.length} using flux`);
-
     const imageBuffer = await callFlux(prompt);
-
-    const imagePath = path.join(imagesDir, `scene_${i}.png`);
     fs.writeFileSync(imagePath, imageBuffer);
     paths.push(imagePath);
-
-    // Approximate cost per image — adjust based on actual provider pricing
     totalCost += 0.01;
+
+    // Upload to Vercel Blob and store in cache for future reuse
+    if (supabase) {
+      try {
+        const blobUrl = await uploadToBlob(imagePath);
+        await setCached(supabase, "image", imageKey, { blobUrl });
+      } catch (err) {
+        console.warn(`Image cache write failed for scene ${i}:`, err);
+      }
+    }
   }
 
   console.log(`Images generated: ${paths.length} files | est. cost: €${totalCost.toFixed(2)}`);
