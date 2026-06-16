@@ -120,15 +120,19 @@ export async function processJob(
     throw new Error(`Failed to update video record: ${updateError.message}`);
   }
 
-  // ── STEP 8: Send WhatsApp notification ──────────────────────────────────
+  // ── STEP 8: Send WhatsApp notification (non-fatal) ──────────────────────
   console.log("Step 8: Sending WhatsApp notification...");
-  await sendVideoReady(job.user_phone, {
-    title: video.title,
-    duration_seconds: video.duration_seconds,
-    total_cost: Number(video.total_cost),
-    blob_url: video.blob_url,
-    scene_count: video.scene_count,
-  });
+  try {
+    await sendVideoReady(job.user_phone, {
+      title: video.title,
+      duration_seconds: video.duration_seconds,
+      total_cost: Number(video.total_cost),
+      blob_url: video.blob_url,
+      scene_count: video.scene_count,
+    });
+  } catch (notifyErr) {
+    console.warn("WhatsApp notification failed (non-fatal):", notifyErr instanceof Error ? notifyErr.message : notifyErr);
+  }
 
   console.log(`Pipeline complete for video: ${videoId}`);
 }
