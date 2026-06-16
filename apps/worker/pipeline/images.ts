@@ -2,7 +2,7 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 import { optimizeImagePrompt } from "./imagePromptOptimizer";
-import { chooseImageModel, type ImageModel } from "./imageRouter";
+import { chooseImageModel } from "./imageRouter";
 import type { Scene } from "./gemini";
 
 export interface ImageResult {
@@ -19,14 +19,11 @@ export async function generateImages(scenes: Scene[]): Promise<ImageResult> {
 
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
-    const model = chooseImageModel(scene);
     const prompt = optimizeImagePrompt(scene);
 
-    console.log(`Generating image ${i + 1}/${scenes.length} using ${model}`);
+    console.log(`Generating image ${i + 1}/${scenes.length} using flux`);
 
-    const imageBuffer = model === "flux"
-      ? await callFlux(prompt)
-      : await callNanoBanana(prompt);
+    const imageBuffer = await callFlux(prompt);
 
     const imagePath = path.join(imagesDir, `scene_${i}.png`);
     fs.writeFileSync(imagePath, imageBuffer);
@@ -41,35 +38,7 @@ export async function generateImages(scenes: Scene[]): Promise<ImageResult> {
   return { paths, cost: totalCost };
 }
 
-// Nano Banana API — best for MS Paint / childish stick figure style
-// Replace endpoint with actual Nano Banana API URL when available
-async function callNanoBanana(prompt: string): Promise<Buffer> {
-  if (!process.env.NANO_BANANA_API_KEY) {
-    throw new Error("Missing NANO_BANANA_API_KEY");
-  }
-
-  const res = await axios.post(
-    "https://api.nano-banana.com/v1/generate",
-    {
-      prompt,
-      width: 1920,
-      height: 1080,
-      num_inference_steps: 20,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.NANO_BANANA_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      responseType: "arraybuffer",
-      timeout: 120_000,
-    }
-  );
-
-  return Buffer.from(res.data);
-}
-
-// FLUX via Replicate — better for abstract/diagram scenes
+// FLUX via Replicate
 // Uses flux-schnell for speed and cost efficiency
 async function callFlux(prompt: string): Promise<Buffer> {
   if (!process.env.REPLICATE_API_KEY) {
