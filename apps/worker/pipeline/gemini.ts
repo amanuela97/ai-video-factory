@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { buildGeminiPrompt } from "../../../packages/prompts/geminiPrompt";
+import { buildGeminiPrompt } from "./prompts/geminiPrompt";
 
 if (!process.env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY");
 

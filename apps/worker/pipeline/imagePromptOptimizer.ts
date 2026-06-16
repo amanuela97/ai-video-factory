@@ -1,4 +1,4 @@
-import { IMAGE_STYLE_PREFIX, IMAGE_STYLE_FORBIDDEN } from "../../../packages/prompts/systemStyle";
+import { IMAGE_STYLE_PREFIX, IMAGE_STYLE_FORBIDDEN } from "./prompts/systemStyle";
 
 export interface SceneForImage {
   visual_prompt: string;

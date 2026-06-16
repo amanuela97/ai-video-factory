@@ -4,16 +4,13 @@
     "module": "commonjs",
     "lib": ["ES2020"],
     "outDir": "./dist",
-    "rootDir": "../../",
+    "rootDir": "./",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node",
-    "paths": {
-      "@prompts/*": ["../../packages/prompts/*"]
-    }
+    "moduleResolution": "node"
   },
-  "include": ["./**/*.ts", "../../packages/prompts/**/*.ts"],
+  "include": ["./**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
