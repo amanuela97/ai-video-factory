@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+.next/
+dist/
+tmp/
+*.mp4
+*.mp3
+*.png
