@@ -23,37 +23,32 @@ export async function renderScenes(scenes: SceneAsset[]): Promise<string[]> {
     const duration = s.end - s.start;
     const output = path.join(scenesDir, `scene_${i}.mp4`);
 
-    // Sanitize narration text for FFmpeg drawtext filter
-    // Escape characters that break FFmpeg filter expressions
-    const safeNarration = s.narration
-      .replace(/\\/g, "\\\\")
-      .replace(/'/g, "\u2019") // replace straight apostrophe with curly
-      .replace(/:/g, "\\:")
-      .replace(/\[/g, "\\[")
-      .replace(/\]/g, "\\]")
-      .replace(/,/g, "\\,")
-      .slice(0, 80); // limit subtitle length
+    // Write subtitle text to a file so FFmpeg reads it directly.
+    // This avoids all shell/filter escaping issues with %, :, ', , and other
+    // special characters that AI-generated text commonly contains.
+    const captionPath = path.join(scenesDir, `scene_${i}_caption.txt`);
+    fs.writeFileSync(captionPath, s.narration.slice(0, 120));
 
     // Build video filter chain:
     // 1. scale to 1920x1080
     // 2. zoompan: subtle Ken Burns zoom-in effect (zoom from 1.0 to 1.08 over the scene)
-    // 3. drawtext: burned-in subtitle at the bottom of the frame with black background box
+    // 3. drawtext: burned-in subtitle using textfile= (safe for any text content)
     const vf = [
       "scale=1920:1080",
       "zoompan=z='min(zoom+0.0008,1.08)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-      `drawtext=text='${safeNarration}':fontcolor=white:fontsize=32:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=h-th-50`,
+      `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=32:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=h-th-50`,
     ].join(",");
 
     const cmd = [
       "ffmpeg -y",
-      `-loop 1 -i "${s.imagePath}"`,             // static image input (looped)
-      `-ss ${s.start} -t ${duration} -i "${s.fullAudioPath}"`, // audio segment extraction
-      `-t ${duration}`,                           // enforce exact clip duration
+      `-loop 1 -i "${s.imagePath}"`,
+      `-ss ${s.start} -t ${duration} -i "${s.fullAudioPath}"`,
+      `-t ${duration}`,
       `-vf "${vf}"`,
       `-c:v libx264`,
-      `-pix_fmt yuv420p`,                         // required for broad compatibility
+      `-pix_fmt yuv420p`,
       `-c:a aac -b:a 192k`,
-      `-shortest`,                                // stop when shortest stream ends
+      `-shortest`,
       `"${output}"`,
     ].join(" ");
 
