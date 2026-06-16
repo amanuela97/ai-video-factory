@@ -48,20 +48,19 @@ export async function renderScenes(scenes: SceneAsset[]): Promise<string[]> {
     fs.writeFileSync(captionPath, wrapText(s.narration, 52));
 
     const vf = [
-      "scale=1920:1080",
-      "zoompan=z='min(zoom+0.0008,1.08)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-      // Padded x so subtitle never touches the edge; centered using text_w
-      `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=34:line_spacing=8:box=1:boxcolor=black@0.65:boxborderw=14:x=(w-text_w)/2:y=h-text_h-60`,
+      "scale=1280:720",
+      "zoompan=z='min(zoom+0.0008,1.05)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+      `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.65:boxborderw=10:x=(w-text_w)/2:y=h-text_h-40`,
     ].join(",");
 
     const cmd = [
       "ffmpeg -y",
-      `-loop 1 -i "${s.imagePath}"`,  // static image
-      `-i "${s.audioPath}"`,           // per-scene audio — -shortest stops when audio ends
+      `-loop 1 -i "${s.imagePath}"`,
+      `-i "${s.audioPath}"`,
       `-vf "${vf}"`,
-      `-c:v libx264 -preset fast`,
+      `-c:v libx264 -preset ultrafast`,
       `-pix_fmt yuv420p`,
-      `-c:a aac -b:a 192k`,
+      `-c:a aac -b:a 128k`,
       `-shortest`,
       `"${output}"`,
     ].join(" ");
@@ -85,18 +84,18 @@ export async function renderOutro(): Promise<string> {
   // Two separate drawtext filters with fixed y offsets so we don't rely on
   // line_spacing or text_h (not available in all FFmpeg builds).
   const vf = [
-    "drawtext=text='ByteForge':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=(h/2)-70",
-    "drawtext=text='Subscribe for more!':fontcolor=0xaaaaaa:fontsize=48:x=(w-text_w)/2:y=(h/2)+30",
+    "drawtext=text='ByteForge':fontcolor=white:fontsize=56:x=(w-text_w)/2:y=(h/2)-50",
+    "drawtext=text='Subscribe for more':fontcolor=0xaaaaaa:fontsize=34:x=(w-text_w)/2:y=(h/2)+20",
   ].join(",");
 
   const cmd = [
     "ffmpeg -y",
-    "-f lavfi -i color=c=0x0d1117:size=1920x1080:rate=30",
+    "-f lavfi -i color=c=0x0d1117:size=1280x720:rate=25",
     "-f lavfi -i anullsrc=r=44100:cl=stereo",
     "-t 6",
     `-vf "${vf}"`,
-    "-c:v libx264 -preset fast -pix_fmt yuv420p",
-    "-c:a aac -b:a 192k",
+    "-c:v libx264 -preset ultrafast -pix_fmt yuv420p",
+    "-c:a aac -b:a 128k",
     "-shortest",
     `"${output}"`,
   ].join(" ");
