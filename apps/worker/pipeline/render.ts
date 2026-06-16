@@ -75,26 +75,23 @@ export async function renderScenes(scenes: SceneAsset[]): Promise<string[]> {
 }
 
 // Renders a 6-second ByteForge outro card — dark background, channel name,
-// subscribe call-to-action. Uses a static textfile so no escaping issues.
+// subscribe call-to-action. Uses inline text (static strings, no escaping needed).
 export async function renderOutro(): Promise<string> {
   const scenesDir = path.resolve("./tmp/scenes");
   fs.mkdirSync(scenesDir, { recursive: true });
 
   const output = path.join(scenesDir, "outro.mp4");
-  const captionPath = path.join(scenesDir, "outro_caption.txt");
 
-  // Two-line outro text
-  fs.writeFileSync(captionPath, "ByteForge\nSubscribe for more!");
-
+  // Two separate drawtext filters with fixed y offsets so we don't rely on
+  // line_spacing or text_h (not available in all FFmpeg builds).
   const vf = [
-    // Dark navy background drawn over the (empty) input
-    "drawbox=x=0:y=0:w=iw:h=ih:color=0x0d1117:t=fill",
-    `drawtext=textfile='${captionPath.replace(/\\/g, "/")}':fontcolor=white:fontsize=72:line_spacing=20:x=(w-text_w)/2:y=(h-text_h)/2`,
+    "drawtext=text='ByteForge':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=(h/2)-70",
+    "drawtext=text='Subscribe for more!':fontcolor=0xaaaaaa:fontsize=48:x=(w-text_w)/2:y=(h/2)+30",
   ].join(",");
 
   const cmd = [
     "ffmpeg -y",
-    "-f lavfi -i color=c=black:size=1920x1080:rate=30",
+    "-f lavfi -i color=c=0x0d1117:size=1920x1080:rate=30",
     "-f lavfi -i anullsrc=r=44100:cl=stereo",
     "-t 6",
     `-vf "${vf}"`,
