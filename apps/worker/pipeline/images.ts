@@ -19,127 +19,146 @@ export async function generateImages(
   const imagesDir = path.resolve("./tmp/images");
   fs.mkdirSync(imagesDir, { recursive: true });
 
-  const paths: string[] = [];
+  // Pre-fill with empty strings so indexes stay aligned
+  const imagePaths: string[] = new Array(scenes.length).fill("");
   let totalCost = 0;
 
-  for (let i = 0; i < scenes.length; i++) {
-    const scene = scenes[i];
-    const prompt = optimizeImagePrompt(scene);
-    const imagePath = path.join(imagesDir, `scene_${i}.png`);
+  // ── Phase 1: Serve cache hits immediately ──────────────────────────────────
+  const toGenerate: { index: number; prompt: string; imagePath: string; cacheKey: string }[] = [];
 
-    // Check per-scene cache
-    const imageKey = hashKey(prompt);
+  for (let i = 0; i < scenes.length; i++) {
+    const prompt = optimizeImagePrompt(scenes[i]);
+    const imagePath = path.join(imagesDir, `scene_${i}.png`);
+    const cacheKey = hashKey(prompt);
+
     if (supabase) {
-      const cached = await getCached<{ blobUrl: string }>(supabase, "image", imageKey);
+      const cached = await getCached<{ blobUrl: string }>(supabase, "image", cacheKey);
       if (cached) {
         console.log(`Image ${i + 1}/${scenes.length}: Cache hit — reusing`);
         await downloadToFile(cached.blobUrl, imagePath);
-        paths.push(imagePath);
+        imagePaths[i] = imagePath;
         continue;
       }
     }
 
-    console.log(`Generating image ${i + 1}/${scenes.length} using flux`);
-    const imageBuffer = await callFluxWithBackoff(prompt, i);
-    fs.writeFileSync(imagePath, imageBuffer);
-    paths.push(imagePath);
-    totalCost += 0.01;
-
-    // Upload to Vercel Blob and store in cache for future reuse
-    if (supabase) {
-      try {
-        const blobUrl = await uploadToBlob(imagePath);
-        await setCached(supabase, "image", imageKey, { blobUrl });
-      } catch (err) {
-        console.warn(`Image cache write failed for scene ${i}:`, err);
-      }
-    }
+    toGenerate.push({ index: i, prompt, imagePath, cacheKey });
   }
 
-  console.log(`Images generated: ${paths.length} files | est. cost: €${totalCost.toFixed(2)}`);
+  if (toGenerate.length === 0) {
+    console.log("All images served from cache");
+    return { paths: imagePaths, cost: 0 };
+  }
 
-  return { paths, cost: totalCost };
+  console.log(
+    `Generating ${toGenerate.length} images via Replicate` +
+    (toGenerate.length < scenes.length ? ` (${scenes.length - toGenerate.length} cached)` : "") +
+    "..."
+  );
+
+  // ── Phase 2: Submit all predictions in parallel (stagger 300ms to avoid burst 429) ───
+  const predictionIds: string[] = [];
+  for (const { prompt } of toGenerate) {
+    const id = await submitPrediction(prompt);
+    predictionIds.push(id);
+    await sleep(300);
+  }
+
+  // ── Phase 3: Poll all predictions concurrently until all complete ───────────
+  const imageUrls = await pollAll(predictionIds);
+
+  // ── Phase 4: Download all images in parallel + write cache ───────────────────
+  await Promise.all(
+    toGenerate.map(async ({ index, imagePath, cacheKey }, i) => {
+      const imgRes = await axios.get(imageUrls[i], { responseType: "arraybuffer", timeout: 60_000 });
+      fs.writeFileSync(imagePath, Buffer.from(imgRes.data));
+      imagePaths[index] = imagePath;
+      totalCost += 0.01;
+
+      if (supabase) {
+        try {
+          const blobUrl = await uploadToBlob(imagePath);
+          await setCached(supabase, "image", cacheKey, { blobUrl });
+        } catch (err) {
+          console.warn(`Image cache write failed for scene ${index}:`, err);
+        }
+      }
+    })
+  );
+
+  console.log(`Images generated: ${toGenerate.length} files | est. cost: €${totalCost.toFixed(2)}`);
+  return { paths: imagePaths, cost: totalCost };
 }
 
-// Wraps callFlux with 429-aware retry and a fixed inter-request delay.
-// Replicate's flux-schnell has a shared GPU queue and rate-limits bursts.
-async function callFluxWithBackoff(prompt: string, sceneIndex: number): Promise<Buffer> {
-  // Stagger requests: add a base delay between each scene to avoid burst 429s
-  if (sceneIndex > 0) await sleep(2000);
+// Submit a single prediction and return its ID.
+// Retries up to 5× on 429 with exponential backoff.
+async function submitPrediction(prompt: string): Promise<string> {
+  if (!process.env.REPLICATE_API_KEY) throw new Error("Missing REPLICATE_API_KEY");
 
-  const maxAttempts = 5;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      return await callFlux(prompt);
+      const res = await axios.post(
+        "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
+        {
+          input: {
+            prompt,
+            aspect_ratio: "16:9",
+            num_inference_steps: 4,
+            output_format: "png",
+          },
+        },
+        {
+          headers: {
+            Authorization: `Token ${process.env.REPLICATE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      return res.data.id as string;
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 429) {
-        const waitMs = 10_000 * (attempt + 1); // 10s, 20s, 30s …
-        console.warn(`Replicate 429 on scene ${sceneIndex + 1}, attempt ${attempt + 1}. Waiting ${waitMs / 1000}s...`);
+        const waitMs = 10_000 * (attempt + 1);
+        console.warn(`Replicate 429 on submission attempt ${attempt + 1}. Waiting ${waitMs / 1000}s...`);
         await sleep(waitMs);
       } else {
         throw err;
       }
     }
   }
-  throw new Error(`Replicate rate-limited after ${maxAttempts} attempts on scene ${sceneIndex + 1}`);
+  throw new Error("Replicate submission rate-limited after 5 attempts");
 }
 
-// FLUX via Replicate
-// Uses flux-schnell for speed and cost efficiency
-async function callFlux(prompt: string): Promise<Buffer> {
-  if (!process.env.REPLICATE_API_KEY) {
-    throw new Error("Missing REPLICATE_API_KEY");
-  }
+// Poll all prediction IDs concurrently every 3s until every one has succeeded.
+async function pollAll(predictionIds: string[]): Promise<string[]> {
+  const imageUrls: (string | null)[] = new Array(predictionIds.length).fill(null);
+  const pending = new Set(predictionIds.map((_, i) => i));
 
-  // Step 1: Create prediction
-  const createRes = await axios.post(
-    "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
-    {
-      input: {
-        prompt,
-        aspect_ratio: "16:9",
-        num_inference_steps: 4,
-        output_format: "png",
-      },
-    },
-    {
-      headers: {
-        Authorization: `Token ${process.env.REPLICATE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  for (let tick = 0; tick < 150 && pending.size > 0; tick++) {
+    await sleep(3000);
 
-  const predictionId = createRes.data.id;
+    await Promise.all(
+      [...pending].map(async (i) => {
+        const res = await axios.get(
+          `https://api.replicate.com/v1/predictions/${predictionIds[i]}`,
+          { headers: { Authorization: `Token ${process.env.REPLICATE_API_KEY}` } }
+        );
 
-  // Step 2: Poll for completion
-  let imageUrl: string | null = null;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await sleep(2000);
-
-    const pollRes = await axios.get(
-      `https://api.replicate.com/v1/predictions/${predictionId}`,
-      {
-        headers: { Authorization: `Token ${process.env.REPLICATE_API_KEY}` },
-      }
+        if (res.data.status === "succeeded") {
+          imageUrls[i] = res.data.output?.[0];
+          pending.delete(i);
+          console.log(`Image ${i + 1}/${predictionIds.length} ready`);
+        } else if (res.data.status === "failed") {
+          throw new Error(`FLUX prediction ${predictionIds[i]} failed: ${res.data.error}`);
+        }
+      })
     );
-
-    if (pollRes.data.status === "succeeded") {
-      imageUrl = pollRes.data.output?.[0];
-      break;
-    }
-
-    if (pollRes.data.status === "failed") {
-      throw new Error(`FLUX prediction failed: ${pollRes.data.error}`);
-    }
   }
 
-  if (!imageUrl) throw new Error("FLUX prediction timed out");
+  if (pending.size > 0) {
+    throw new Error(`${pending.size} Replicate predictions timed out after 7.5 minutes`);
+  }
 
-  // Step 3: Download image
-  const imgRes = await axios.get(imageUrl, { responseType: "arraybuffer" });
-  return Buffer.from(imgRes.data);
+  return imageUrls as string[];
 }
 
 function sleep(ms: number) {
