@@ -41,9 +41,8 @@ async function resetStuckJobs() {
   for (const status of stuckStatuses) {
     const { count } = await supabase
       .from("jobs")
-      .update({ status: "queued", error: null })
-      .eq("status", status)
-      .select("id", { count: "exact", head: true });
+      .update({ status: "queued", error: null }, { count: "exact" })
+      .eq("status", status);
 
     if (count && count > 0) {
       console.log(`Reset ${count} stuck job(s) from status: ${status} → queued`);
