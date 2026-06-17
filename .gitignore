@@ -7,3 +7,5 @@ tmp/
 *.mp4
 *.mp3
 *.png
+# Keep committed assets (channel logo etc.)
+!apps/worker/assets/*.png

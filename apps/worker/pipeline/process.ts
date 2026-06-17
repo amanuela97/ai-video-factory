@@ -43,9 +43,14 @@ async function getOrCreateOutro(supabase: SupabaseClient): Promise<string> {
   );
 
   // Logo lives at apps/worker/assets/logo.png — traverse up from dist/pipeline/
+  // Falls back to no logo if the file wasn't committed to git yet.
   const logoPath = path.join(__dirname, "../../assets/logo.png");
+  const hasLogo = fs.existsSync(logoPath);
+  if (!hasLogo) {
+    console.warn("Outro logo not found at", logoPath, "— rendering without logo");
+  }
 
-  const renderedPath = await renderOutro(outroAudioPath, logoPath);
+  const renderedPath = await renderOutro(outroAudioPath, hasLogo ? logoPath : null);
 
   try {
     const blobUrl = await uploadToBlob(renderedPath);
