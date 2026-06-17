@@ -34,9 +34,10 @@ export async function processJob(
   const videoKey = hashKey(job.input_topic, String(job.input_duration));
 
   // ── VIDEO CACHE CHECK — skip all API calls if this topic+duration was already rendered ──
+  console.log(`Checking video cache (key: ${videoKey})...`);
   const cachedVideo = await getCached<VideoCacheEntry>(supabase, "video", videoKey);
   if (cachedVideo) {
-    console.log("Video cache hit — reusing rendered video, skipping pipeline");
+    console.log("Video cache HIT — reusing rendered video, skipping pipeline");
     await supabase
       .from("videos")
       .update({
@@ -179,12 +180,14 @@ export async function processJob(
   const blobUrl = await uploadToBlob(finalVideoPath);
 
   // Cache the final rendered video so the same topic+duration never re-renders
-  await setCached(supabase, "video", videoKey, {
+  const videoEntry: VideoCacheEntry = {
     blobUrl,
     thumbnailUrl,
     title: script.title,
     sceneCount: script.scenes.length,
-  } satisfies VideoCacheEntry);
+  };
+  await setCached(supabase, "video", videoKey, videoEntry);
+  console.log(`Video cached (key: ${videoKey})`);
 
   // ── STEP 7: Save final metadata to Supabase ─────────────────────────────
   console.log("Step 7: Saving metadata...");

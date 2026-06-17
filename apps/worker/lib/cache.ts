@@ -31,15 +31,14 @@ export async function setCached<T>(
   key: string,
   value: T
 ): Promise<void> {
-  try {
-    await supabase
-      .from("pipeline_cache")
-      .upsert(
-        { cache_key: `${step}:${key}`, step, data: value },
-        { onConflict: "cache_key" }
-      );
-  } catch (err) {
-    console.warn(`Cache write failed for ${step}:${key}:`, err);
+  const { error } = await supabase
+    .from("pipeline_cache")
+    .upsert(
+      { cache_key: `${step}:${key}`, step, data: value },
+      { onConflict: "cache_key" }
+    );
+  if (error) {
+    console.warn(`Cache write failed for ${step}:${key}:`, error.message);
   }
 }
 

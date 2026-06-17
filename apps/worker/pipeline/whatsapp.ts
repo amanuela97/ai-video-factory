@@ -6,6 +6,13 @@ function normalizePhone(phone: string): string {
   return phone.replace(/[\s\-\+\(\)]/g, "");
 }
 
+function getCredentials() {
+  const token = process.env.WHATSAPP_TOKEN;
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  if (!token || !phoneId) throw new Error("WhatsApp credentials missing (WHATSAPP_TOKEN / WHATSAPP_PHONE_ID)");
+  return { token, phoneId };
+}
+
 export async function sendWhatsAppMessage({
   to,
   message,
@@ -13,15 +20,9 @@ export async function sendWhatsAppMessage({
   to: string;
   message: string;
 }) {
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const { token, phoneId } = getCredentials();
 
-  if (!token || !phoneId) {
-    console.warn("WhatsApp credentials missing — skipping notification");
-    return;
-  }
-
-  await axios.post(
+  const res = await axios.post(
     `https://graph.facebook.com/v19.0/${phoneId}/messages`,
     {
       messaging_product: "whatsapp",
@@ -31,6 +32,8 @@ export async function sendWhatsAppMessage({
     },
     { headers: { Authorization: `Bearer ${token}` } }
   );
+
+  console.log(`WhatsApp text sent to ${normalizePhone(to)} — status: ${res.status}`);
 }
 
 export async function sendInteractiveButtons({
@@ -42,34 +45,37 @@ export async function sendInteractiveButtons({
   body: string;
   buttons: Array<{ id: string; title: string }>;
 }) {
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const { token, phoneId } = getCredentials();
 
-  if (!token || !phoneId) {
-    console.warn("WhatsApp credentials missing — skipping notification");
-    return;
-  }
-
-  // WhatsApp allows max 3 reply buttons
-  await axios.post(
-    `https://graph.facebook.com/v19.0/${phoneId}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to: normalizePhone(to),
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: body },
-        action: {
-          buttons: buttons.slice(0, 3).map((b) => ({
-            type: "reply",
-            reply: { id: b.id, title: b.title },
-          })),
+  try {
+    const res = await axios.post(
+      `https://graph.facebook.com/v19.0/${phoneId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: normalizePhone(to),
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: body },
+          action: {
+            buttons: buttons.slice(0, 3).map((b) => ({
+              type: "reply",
+              reply: { id: b.id, title: b.title },
+            })),
+          },
         },
       },
-    },
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    console.log(`WhatsApp interactive sent to ${normalizePhone(to)} — status: ${res.status}`);
+  } catch (err: unknown) {
+    // Interactive messages require an open 24h conversation window.
+    // If the window is closed, fall back to a plain text message so the
+    // user always receives a notification.
+    const apiError = (err as { response?: { data?: unknown } })?.response?.data;
+    console.warn("Interactive message failed, falling back to plain text. API error:", JSON.stringify(apiError));
+    await sendWhatsAppMessage({ to, message: body });
+  }
 }
 
 export async function sendVideoReady(
@@ -83,6 +89,12 @@ export async function sendVideoReady(
     scene_count: number;
   }
 ) {
+  // Skip entirely for non-phone values used in testing (e.g. "debug")
+  if (!to || !to.replace(/[\s\+]/g, "").match(/^\d{7,15}$/)) {
+    console.log(`Skipping WhatsApp notification — "${to}" is not a valid phone number`);
+    return;
+  }
+
   const minutes = Math.floor(video.duration_seconds / 60);
   const seconds = String(video.duration_seconds % 60).padStart(2, "0");
 
