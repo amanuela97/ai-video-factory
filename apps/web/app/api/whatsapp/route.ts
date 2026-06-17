@@ -43,10 +43,21 @@ export async function POST(req: NextRequest) {
       const durationMinutes = parseInt(durationRaw.replace(/\D/g, "")) || 5;
       const durationSeconds = durationMinutes * 60;
 
-      if (!topic) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
+      if (!topic) {
+        await sendWhatsAppMessage({
+          to: from,
+          message: "Please send a message in the format:\n\n*Topic | Duration (minutes)*\n\nExample:\nHow the Internet Works | 4",
+        });
+        return NextResponse.json({ ok: true });
+      }
 
       const job = await createJob({ topic, durationSeconds, userPhone: from });
       console.log(`Job created: ${job.id} for topic: "${topic}"`);
+
+      await sendWhatsAppMessage({
+        to: from,
+        message: `Got it! 🎬 Generating your video:\n\n*${topic}*\n⏱ ${durationMinutes} min\n\nI'll message you when it's ready.`,
+      });
     }
 
     return NextResponse.json({ ok: true });
