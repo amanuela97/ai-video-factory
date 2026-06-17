@@ -12,6 +12,52 @@ import { trackCost } from "../lib/cost";
 import { generateThumbnail, pickThumbnailScene } from "./thumbnail";
 import { hashKey, getCached, setCached, downloadToFile } from "../lib/cache";
 
+const OUTRO_SCRIPT =
+  "If you enjoyed this video, please subscribe to this channel. This has been ByteForge, and I will see you in the next one.";
+
+// Returns a path to outro.mp4 — generates + caches on first call, reuses on all subsequent calls.
+async function getOrCreateOutro(supabase: SupabaseClient): Promise<string> {
+  const outroPath = path.resolve("./tmp/scenes/outro.mp4");
+  const outroCacheKey = hashKey(
+    OUTRO_SCRIPT,
+    process.env.ELEVENLABS_VOICE_ID || "default",
+    "v1"
+  );
+
+  const cached = await getCached<{ blobUrl: string }>(supabase, "outro", outroCacheKey);
+  if (cached) {
+    console.log("Outro cache HIT — reusing cached outro");
+    await downloadToFile(cached.blobUrl, outroPath);
+    return outroPath;
+  }
+
+  console.log("Outro not cached — generating voiceover and rendering...");
+
+  const outroAudioPath = path.resolve("./tmp/audio/outro.mp3");
+  fs.mkdirSync(path.dirname(outroAudioPath), { recursive: true });
+
+  await retry(
+    () => generateSceneAudio(OUTRO_SCRIPT, outroAudioPath),
+    3,
+    "elevenlabs-outro"
+  );
+
+  // Logo lives at apps/worker/assets/logo.png — traverse up from dist/pipeline/
+  const logoPath = path.join(__dirname, "../../assets/logo.png");
+
+  const renderedPath = await renderOutro(outroAudioPath, logoPath);
+
+  try {
+    const blobUrl = await uploadToBlob(renderedPath);
+    await setCached(supabase, "outro", outroCacheKey, { blobUrl });
+    console.log(`Outro cached: ${blobUrl}`);
+  } catch (err) {
+    console.warn("Outro cache write failed (non-fatal):", err);
+  }
+
+  return renderedPath;
+}
+
 type VideoCacheEntry = {
   blobUrl: string;
   thumbnailUrl: string | null;
@@ -171,7 +217,7 @@ export async function processJob(
   await markJob(job.id, "rendering");
   console.log("Step 5: Rendering video...");
   const sceneFiles = await renderScenes(sceneAssets);
-  const outroPath = await renderOutro();
+  const outroPath = await getOrCreateOutro(supabase);
   const finalVideoPath = await concatScenes([...sceneFiles, outroPath]);
 
   // ── STEP 6: Upload to Vercel Blob ───────────────────────────────────────

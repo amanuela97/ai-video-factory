@@ -33,7 +33,9 @@ export async function sendWhatsAppMessage({
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
-  console.log(`WhatsApp text sent to ${normalizePhone(to)} — status: ${res.status}`);
+  const waId = res.data?.contacts?.[0]?.wa_id;
+  const msgId = res.data?.messages?.[0]?.id;
+  console.log(`WhatsApp text sent to ${normalizePhone(to)} — status: ${res.status} | wa_id: ${waId} | msg_id: ${msgId}`);
 }
 
 export async function sendInteractiveButtons({
@@ -67,7 +69,9 @@ export async function sendInteractiveButtons({
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    console.log(`WhatsApp interactive sent to ${normalizePhone(to)} — status: ${res.status}`);
+    const waId = res.data?.contacts?.[0]?.wa_id;
+    const msgId = res.data?.messages?.[0]?.id;
+    console.log(`WhatsApp interactive sent to ${normalizePhone(to)} — status: ${res.status} | wa_id: ${waId} | msg_id: ${msgId}`);
   } catch (err: unknown) {
     // Interactive messages require an open 24h conversation window.
     // If the window is closed, fall back to a plain text message so the
