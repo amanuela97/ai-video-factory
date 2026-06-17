@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import ws from "ws";
 import { processJob } from "./pipeline/process";
+import { processYouTubeUploadQueue } from "./pipeline/youtubeUploadWorker";
 
 if (!process.env.SUPABASE_URL) throw new Error("Missing SUPABASE_URL");
 if (!process.env.SUPABASE_SERVICE_ROLE_KEY) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
@@ -57,6 +58,11 @@ async function run() {
   await resetStuckJobs();
 
   while (true) {
+    // Process YouTube upload queue alongside video jobs
+    await processYouTubeUploadQueue(supabase).catch((err) =>
+      console.error("YouTube upload queue error:", err)
+    );
+
     const job = await getNextJob();
 
     if (!job) {

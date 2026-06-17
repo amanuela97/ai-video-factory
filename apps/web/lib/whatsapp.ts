@@ -3,6 +3,10 @@ import axios from "axios";
 const TOKEN = process.env.WHATSAPP_TOKEN!;
 const PHONE_ID = process.env.WHATSAPP_PHONE_ID!;
 
+function normalizePhone(phone: string): string {
+  return phone.replace(/[\s\-\+\(\)]/g, "");
+}
+
 export async function sendWhatsAppMessage({
   to,
   message,
@@ -14,42 +18,40 @@ export async function sendWhatsAppMessage({
     `https://graph.facebook.com/v19.0/${PHONE_ID}/messages`,
     {
       messaging_product: "whatsapp",
-      to,
+      to: normalizePhone(to),
       type: "text",
       text: { body: message },
     },
-    {
-      headers: { Authorization: `Bearer ${TOKEN}` },
-    }
+    { headers: { Authorization: `Bearer ${TOKEN}` } }
   );
 }
 
-export async function sendVideoReady(
-  to: string,
-  video: {
-    title: string;
-    duration_seconds: number;
-    total_cost: number;
-    blob_url: string;
-    scene_count: number;
-  }
-) {
-  const minutes = Math.floor(video.duration_seconds / 60);
-  const seconds = video.duration_seconds % 60;
-  const paddedSeconds = String(seconds).padStart(2, "0");
-
-  const msg = [
-    "🎬 Video Ready",
-    "",
-    `Title: ${video.title}`,
-    `Duration: ${minutes}:${paddedSeconds}`,
-    `Scenes: ${video.scene_count}`,
-    "",
-    `💰 Cost: €${video.total_cost.toFixed(2)}`,
-    "",
-    "▶️ Watch:",
-    video.blob_url,
-  ].join("\n");
-
-  await sendWhatsAppMessage({ to, message: msg });
+export async function sendInteractiveButtons({
+  to,
+  body,
+  buttons,
+}: {
+  to: string;
+  body: string;
+  buttons: Array<{ id: string; title: string }>;
+}) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${PHONE_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to: normalizePhone(to),
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: body },
+        action: {
+          buttons: buttons.slice(0, 3).map((b) => ({
+            type: "reply",
+            reply: { id: b.id, title: b.title },
+          })),
+        },
+      },
+    },
+    { headers: { Authorization: `Bearer ${TOKEN}` } }
+  );
 }

@@ -12,6 +12,13 @@ import { trackCost } from "../lib/cost";
 import { generateThumbnail, pickThumbnailScene } from "./thumbnail";
 import { hashKey, getCached, setCached, downloadToFile } from "../lib/cache";
 
+type VideoCacheEntry = {
+  blobUrl: string;
+  thumbnailUrl: string | null;
+  title: string;
+  sceneCount: number;
+};
+
 export async function processJob(
   job: {
     id: string;
@@ -24,6 +31,39 @@ export async function processJob(
   markJob: (jobId: string, status: string, error?: string) => Promise<void>
 ) {
   const videoId = job.video_id;
+  const videoKey = hashKey(job.input_topic, String(job.input_duration));
+
+  // ── VIDEO CACHE CHECK — skip all API calls if this topic+duration was already rendered ──
+  const cachedVideo = await getCached<VideoCacheEntry>(supabase, "video", videoKey);
+  if (cachedVideo) {
+    console.log("Video cache hit — reusing rendered video, skipping pipeline");
+    await supabase
+      .from("videos")
+      .update({
+        blob_url: cachedVideo.blobUrl,
+        thumbnail_url: cachedVideo.thumbnailUrl,
+        status: "done",
+        scene_count: cachedVideo.sceneCount,
+        title: cachedVideo.title,
+      })
+      .eq("id", videoId);
+
+    await markJob(job.id, "done");
+
+    try {
+      await sendVideoReady(job.user_phone, {
+        videoId,
+        title: cachedVideo.title,
+        duration_seconds: job.input_duration,
+        total_cost: 0,
+        blob_url: cachedVideo.blobUrl,
+        scene_count: cachedVideo.sceneCount,
+      });
+    } catch (err) {
+      console.warn("WhatsApp notification failed (non-fatal):", err instanceof Error ? err.message : err);
+    }
+    return;
+  }
 
   // ── STEP 1: Generate script via Gemini (cached) ──────────────────────────
   console.log("Step 1: Generating script...");
@@ -106,7 +146,6 @@ export async function processJob(
     });
   }
 
-  // Each scene gets its own image + its own audio file
   const sceneAssets = script.scenes.map((scene, i) => ({
     ...scene,
     imagePath: imagePaths[i],
@@ -139,6 +178,14 @@ export async function processJob(
   console.log("Step 6: Uploading to Vercel Blob...");
   const blobUrl = await uploadToBlob(finalVideoPath);
 
+  // Cache the final rendered video so the same topic+duration never re-renders
+  await setCached(supabase, "video", videoKey, {
+    blobUrl,
+    thumbnailUrl,
+    title: script.title,
+    sceneCount: script.scenes.length,
+  } satisfies VideoCacheEntry);
+
   // ── STEP 7: Save final metadata to Supabase ─────────────────────────────
   console.log("Step 7: Saving metadata...");
   const { data: video, error: updateError } = await supabase
@@ -157,10 +204,11 @@ export async function processJob(
     throw new Error(`Failed to update video record: ${updateError.message}`);
   }
 
-  // ── STEP 8: Send WhatsApp notification (non-fatal) ──────────────────────
+  // ── STEP 8: Send WhatsApp notification with Upload/Cancel buttons ────────
   console.log("Step 8: Sending WhatsApp notification...");
   try {
     await sendVideoReady(job.user_phone, {
+      videoId,
       title: video.title,
       duration_seconds: video.duration_seconds,
       total_cost: Number(video.total_cost),

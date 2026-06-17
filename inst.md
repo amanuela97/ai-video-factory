@@ -1287,4 +1287,3 @@ export async function uploadToYouTube({
 | 12    | YouTube upload (optional)              | Video appears in YouTube Studio                  |
 | 13    | Deployment to Vercel + Railway         | Live system responds to real WhatsApp messages   |
 
-

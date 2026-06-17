@@ -91,3 +91,35 @@ export async function uploadToYouTube(options: YouTubeUploadOptions) {
     data: videoRes.data,
   };
 }
+
+// Searches the authenticated channel for videos with a similar title.
+// Returns the title of the first match, or null if nothing similar is found.
+export async function checkYouTubeDuplicate(title: string): Promise<string | null> {
+  if (
+    !process.env.GOOGLE_CLIENT_ID ||
+    !process.env.GOOGLE_CLIENT_SECRET ||
+    !process.env.GOOGLE_REFRESH_TOKEN
+  ) {
+    return null;
+  }
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT || "http://localhost:3000/oauth/callback"
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+
+  const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+
+  const res = await youtube.search.list({
+    part: ["snippet"],
+    forMine: true,
+    q: title,
+    type: ["video"],
+    maxResults: 3,
+  });
+
+  const match = res.data.items?.[0]?.snippet?.title;
+  return match ?? null;
+}

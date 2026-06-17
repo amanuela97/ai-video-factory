@@ -10,9 +10,9 @@ export interface SceneAsset {
   audioPath: string; // per-scene audio file — image stays until this finishes
 }
 
-// Splits text into lines of at most maxLen characters, breaking on word boundaries.
-// FFmpeg textfile= supports newlines and renders each line separately.
-function wrapText(text: string, maxLen = 52): string {
+// Splits text into at most 2 lines of maxLen characters each.
+// Long narrations are truncated with "…" to prevent subtitles covering the video.
+function wrapText(text: string, maxLen = 72): string {
   const words = text.split(" ");
   const lines: string[] = [];
   let current = "";
@@ -20,12 +20,21 @@ function wrapText(text: string, maxLen = 52): string {
   for (const word of words) {
     if ((current + " " + word).trim().length > maxLen) {
       if (current) lines.push(current.trim());
+      if (lines.length >= 2) break; // hard cap at 2 lines
       current = word;
     } else {
       current = current ? current + " " + word : word;
     }
   }
-  if (current) lines.push(current.trim());
+  if (current && lines.length < 2) lines.push(current.trim());
+
+  // Truncate the last line if text was cut off
+  const full = text.trim();
+  const wrapped = lines.join(" ");
+  if (wrapped.length < full.length - 4) {
+    lines[lines.length - 1] = lines[lines.length - 1].replace(/\W+$/, "") + "…";
+  }
+
   return lines.join("\n");
 }
 
